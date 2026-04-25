@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import logging
 import logging.handlers
@@ -87,6 +88,8 @@ VHOSTS_DIR = BASE_DIR / "vhosts"
 TOP_DOCS_DIR = BASE_DIR / "docs"
 TOP_TEMPLATES_DIR = BASE_DIR / "templates"
 TOP_LOGS_DIR = BASE_DIR / "logs"
+
+VHOST_OVERRIDE: str | None = os.environ.get("CMS_VHOST_OVERRIDE") or None
 
 
 _LANG_ALIASES = {
@@ -488,6 +491,15 @@ def match_vhost(hostname: str) -> tuple[Path | None, str | None]:
     return None, None
 
 
+def resolve_vhost(request: Request) -> tuple[Path | None, str | None]:
+    """Return (vhost_dir, redirect_host), respecting VHOST_OVERRIDE."""
+    if VHOST_OVERRIDE is not None:
+        exact = VHOSTS_DIR / VHOST_OVERRIDE
+        return (exact if exact.is_dir() else None), None
+    hostname = request.headers.get("host", "").split(":")[0]
+    return match_vhost(hostname)
+
+
 def make_jinja_env(vhost_dir: Path | None) -> Environment:
     loaders = []
     if vhost_dir is not None:
@@ -610,8 +622,7 @@ def send_inquiry_email(data: dict, settings: dict, vhost_dir: Path | None) -> No
 
 
 async def api_inquiry(request: Request) -> Response:
-    hostname = request.headers.get("host", "").split(":")[0]
-    vhost_dir, _ = match_vhost(hostname)
+    vhost_dir, _ = resolve_vhost(request)
     settings = load_api_settings(vhost_dir)
 
     if not settings.get("inquiry") or not settings.get("smtp"):
@@ -644,8 +655,7 @@ async def api_inquiry(request: Request) -> Response:
 
 
 async def handle_request(request: Request) -> Response:
-    hostname = request.headers.get("host", "").split(":")[0]
-    vhost_dir, redirect_host = match_vhost(hostname)
+    vhost_dir, redirect_host = resolve_vhost(request)
 
     if redirect_host is not None:
         url = request.url.replace(netloc=redirect_host)
@@ -707,8 +717,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         start = time.monotonic()
         response = await call_next(request)
 
-        hostname = request.headers.get("host", "").split(":")[0]
-        vhost_dir, _ = match_vhost(hostname)
+        vhost_dir, _ = resolve_vhost(request)
 
         size = int(response.headers.get("content-length", 0))
         apache_combined_log(request, response.status_code, size, vhost_dir)
@@ -732,7 +741,10 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-reload", action="store_true", help="Disable auto-reload (for production)")
     parser.add_argument("--no-uvicorn-access-log", action="store_true", help="Suppress uvicorn access log (use CMS log only)")
+    parser.add_argument("--vhost-override", metavar="HOSTNAME", help="Force a specific vhost regardless of Host header (dev only)")
     args = parser.parse_args()
+    if args.vhost_override:
+        os.environ["CMS_VHOST_OVERRIDE"] = args.vhost_override
     uvicorn.run(
         "app:app",
         host=args.host,

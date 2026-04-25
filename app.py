@@ -13,6 +13,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
+from pygments import highlight
+from pygments.lexers import get_lexer_by_name, TextLexer
+from pygments.formatters import HtmlFormatter
+from pygments.util import ClassNotFound
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -61,6 +65,29 @@ VHOSTS_DIR = BASE_DIR / "vhosts"
 TOP_DOCS_DIR = BASE_DIR / "docs"
 TOP_TEMPLATES_DIR = BASE_DIR / "templates"
 TOP_LOGS_DIR = BASE_DIR / "logs"
+
+
+_LANG_ALIASES = {
+    "c++": "cpp", "cxx": "cpp", "c#": "csharp",
+    "shell": "bash", "sh": "bash", "zsh": "bash",
+    "js": "javascript", "ts": "typescript",
+}
+
+_PYGMENTS_FORMATTER = HtmlFormatter(nowrap=True)
+PYGMENTS_CSS = _PYGMENTS_FORMATTER.get_style_defs(".highlight")
+
+
+def _render_fence(self, tokens, idx, options, env):
+    token = tokens[idx]
+    info = token.info.strip().split(None, 1)[0] if token.info else ""
+    lang = _LANG_ALIASES.get(info, info)
+    try:
+        lexer = get_lexer_by_name(lang) if lang else TextLexer()
+    except ClassNotFound:
+        lexer = TextLexer()
+    highlighted = highlight(token.content, lexer, _PYGMENTS_FORMATTER)
+    lang_class = f" language-{html.escape(info)}" if info else ""
+    return f'<pre class="highlight"><code class="{lang_class.strip()}">{highlighted}</code></pre>\n'
 
 
 def _render_link_open(self, tokens, idx, options, env):
@@ -153,6 +180,7 @@ def make_md(container_classes: list[str] = ()) -> MarkdownIt:
             _make_container_rule(set(container_classes)),
             {"alt": ["paragraph", "reference", "blockquote", "list"]},
         )
+    instance.add_render_rule("fence", _render_fence)
     instance.add_render_rule("link_open", _render_link_open)
     return instance
 
@@ -423,7 +451,9 @@ def make_jinja_env(vhost_dir: Path | None) -> Environment:
         if vhost_templates.is_dir():
             loaders.append(FileSystemLoader(str(vhost_templates)))
     loaders.append(FileSystemLoader(str(TOP_TEMPLATES_DIR)))
-    return Environment(loader=ChoiceLoader(loaders), autoescape=select_autoescape(["html"]))
+    env = Environment(loader=ChoiceLoader(loaders), autoescape=select_autoescape(["html"]))
+    env.globals["pygments_css"] = PYGMENTS_CSS
+    return env
 
 
 def _get_logs_dir(vhost_dir: Path | None) -> Path:

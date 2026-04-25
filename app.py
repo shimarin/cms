@@ -63,26 +63,6 @@ TOP_TEMPLATES_DIR = BASE_DIR / "templates"
 TOP_LOGS_DIR = BASE_DIR / "logs"
 
 
-def _container_validate(params, markup):
-    return bool(params.strip().split(None, 1)[0])
-
-
-def _container_render(self, tokens, idx, options, env):
-    token = tokens[idx]
-    if token.nesting == 1:
-        class_name = token.info.strip().split(None, 1)[0]
-        token.attrSet("class", class_name)
-    return self.renderToken(tokens, idx, options, env)
-
-
-md = (
-    MarkdownIt("commonmark", {"html": True})
-    .use(front_matter_plugin)
-    .use(footnote_plugin)
-    .use(container_plugin, name="div", validate=_container_validate, render=_container_render)
-)
-
-
 def _render_link_open(self, tokens, idx, options, env):
     token = tokens[idx]
     href = token.attrGet("href") or ""
@@ -91,11 +71,114 @@ def _render_link_open(self, tokens, idx, options, env):
     return self.renderToken(tokens, idx, options, env)
 
 
-md.add_render_rule("link_open", _render_link_open)
+def _make_container_rule(class_set: set[str]):
+    """全コンテナクラスを1つのブロックルールでスタック管理する。"""
+    def rule(state, startLine, endLine, silent):
+        start = state.bMarks[startLine] + state.tShift[startLine]
+        maximum = state.eMarks[startLine]
+
+        pos = start
+        while pos < maximum and state.src[pos] == ':':
+            pos += 1
+        marker_count = pos - start
+        if marker_count < 3:
+            return False
+
+        params = state.src[pos:maximum].strip()
+        class_name = params.split(None, 1)[0] if params else ""
+        if not class_name or class_name not in class_set:
+            return False
+        if silent:
+            return True
+
+        # 対応する閉じマーカーを深さ追跡で探す
+        depth = 1
+        nextLine = startLine + 1
+        auto_closed = False
+        while nextLine < endLine:
+            ls = state.bMarks[nextLine] + state.tShift[nextLine]
+            lm = state.eMarks[nextLine]
+            if state.src[ls:ls+1] == ':':
+                cp = ls
+                while cp < lm and state.src[cp] == ':':
+                    cp += 1
+                lmc = cp - ls
+                if lmc >= 3:
+                    rest = state.src[cp:lm].strip()
+                    lcls = rest.split(None, 1)[0] if rest else ""
+                    if lcls and lcls in class_set:
+                        depth += 1
+                    elif not lcls and lmc >= marker_count:
+                        depth -= 1
+                        if depth == 0:
+                            auto_closed = True
+                            break
+            nextLine += 1
+
+        old_parent, old_line_max = state.parentType, state.lineMax
+        state.parentType = "container"
+        state.lineMax = nextLine
+
+        token = state.push(f"container_{class_name}_open", "div", 1)
+        token.markup = state.src[start:pos]
+        token.block = True
+        token.info = params
+        token.map = [startLine, nextLine]
+        token.attrSet("class", class_name)
+
+        state.md.block.tokenize(state, startLine + 1, nextLine)
+
+        token = state.push(f"container_{class_name}_close", "div", -1)
+        token.markup = state.src[start:pos]
+        token.block = True
+
+        state.parentType = old_parent
+        state.lineMax = old_line_max
+        state.line = nextLine + (1 if auto_closed else 0)
+        return True
+
+    return rule
 
 
-def parse_markdown(text: str) -> tuple[str, dict]:
-    tokens = md.parse(text)
+def make_md(container_classes: list[str] = ()) -> MarkdownIt:
+    instance = (
+        MarkdownIt("commonmark", {"html": True})
+        .use(front_matter_plugin)
+        .use(footnote_plugin)
+        .enable("table")
+    )
+    if container_classes:
+        instance.block.ruler.before(
+            "fence", "containers",
+            _make_container_rule(set(container_classes)),
+            {"alt": ["paragraph", "reference", "blockquote", "list"]},
+        )
+    instance.add_render_rule("link_open", _render_link_open)
+    return instance
+
+
+# container_classesなし（index_ofのfront matter抽出・通常ページ）用ベースインスタンス
+_md_base = make_md()
+
+
+def extract_front_matter_raw(text: str) -> dict:
+    """rawテキストからfront matterだけYAMLパースして返す（mdトークナイザ不使用）。"""
+    if not text.startswith("---"):
+        return {}
+    rest = text[3:]
+    end = rest.find("\n---")
+    if end == -1:
+        return {}
+    try:
+        parsed = yaml.safe_load(rest[:end])
+        return parsed if isinstance(parsed, dict) else {}
+    except yaml.YAMLError:
+        return {}
+
+
+def parse_markdown(text: str, md_instance: MarkdownIt | None = None) -> tuple[str, dict]:
+    instance = md_instance or _md_base
+    tokens = instance.parse(text)
     front_matter_vars = {}
     for token in tokens:
         if token.type == "front_matter":
@@ -106,7 +189,7 @@ def parse_markdown(text: str) -> tuple[str, dict]:
             except yaml.YAMLError:
                 pass
             break
-    body_html = md.renderer.render(tokens, md.options, {})
+    body_html = instance.renderer.render(tokens, instance.options, {})
     return body_html, front_matter_vars
 
 
@@ -292,8 +375,10 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
         except Exception:
             pass
 
+    text = md_path.read_text(encoding="utf-8")
     defaults = load_defaults(defaults_docs_dir, md_rel)
-    body_html, front_matter = parse_markdown(md_path.read_text(encoding="utf-8"))
+    container_classes = {**defaults, **extract_front_matter_raw(text)}.get("container_classes", [])
+    body_html, front_matter = parse_markdown(text, make_md(container_classes))
     vars_ = {**defaults, **front_matter}
     template_name = vars_.pop("template", "default.j2")
     env = make_jinja_env(vhost_dir)

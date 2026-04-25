@@ -14,3 +14,6 @@ vhosts/
 # 秘匿情報を含む可能性があるAPI設定
 # （管理する場合はこの行を削除してsecrets管理を別途行うこと）
 **/api/settings.json
+
+# syncthing
+.stfolder/

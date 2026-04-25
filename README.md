@@ -12,8 +12,13 @@ Markdown→HTMLのオンデマンド変換をするCMS
 ## 起動
 
 ```bash
+# 開発時（auto-reload有効）
 python app.py
-# または
+
+# 本番・systemd運用時（reload無効、uvicornアクセスログ抑制）
+python app.py --no-reload --no-uvicorn-access-log
+
+# または uvicorn を直接使う場合
 uvicorn app:app --reload
 ```
 

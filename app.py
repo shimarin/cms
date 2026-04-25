@@ -405,6 +405,19 @@ def render_error(status_code: int, vhost_dir: Path | None) -> Response:
 
 def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_dir: Path | None, lookup_docs: list[Path], request: Request) -> Response:
     mtime = md_path.stat().st_mtime
+    # テンプレートのmtimeも含めて有効なmtimeを確定する（304判定前に必要）
+    text = md_path.read_text(encoding="utf-8")
+    defaults = load_defaults(defaults_docs_dir, md_rel)
+    raw_fm = extract_front_matter_raw(text)
+    template_name = {**defaults, **raw_fm}.get("template", "default.j2")
+    env = make_jinja_env(vhost_dir)
+    try:
+        _, tmpl_filename, _ = env.loader.get_source(env, template_name)
+        if tmpl_filename:
+            mtime = max(mtime, Path(tmpl_filename).stat().st_mtime)
+    except Exception:
+        pass
+
     etag = f'"{int(mtime)}"'
     last_modified = formatdate(mtime, usegmt=True)
     cache_headers = {
@@ -425,27 +438,22 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
         except Exception:
             pass
 
-    text = md_path.read_text(encoding="utf-8")
-    defaults = load_defaults(defaults_docs_dir, md_rel)
-    container_classes = {**defaults, **extract_front_matter_raw(text)}.get("container_classes", [])
+    container_classes = {**defaults, **raw_fm}.get("container_classes", [])
     body_html, front_matter = parse_markdown(text, make_md(container_classes))
     vars_ = {**defaults, **front_matter}
-    template_name = vars_.pop("template", "default.j2")
+    vars_.pop("template", None)
 
     url_path = request.url.path
     page_dir = url_path if url_path.endswith("/") else str(Path(url_path).parent) + "/"
-    # site_url: defaults/front matter で上書き可能
-    computed_site_url = get_site_url(request)
     page_vars = {
         "url_path": url_path,
         "page_dir": page_dir,
-        "site_url": computed_site_url,
+        "site_url": get_site_url(request),
     }
     # defaults/front matter の明示値を優先
     page_vars.update(vars_)
     vars_ = page_vars
 
-    env = make_jinja_env(vhost_dir)
     env.globals["index_of"] = make_index_of(lookup_docs, defaults_docs_dir)
     try:
         tmpl = env.get_template(template_name)

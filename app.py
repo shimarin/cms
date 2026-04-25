@@ -45,19 +45,41 @@ TRUSTED_PROXIES: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
 ]
 
 
-def get_client_ip(request: Request) -> str:
+def _is_trusted_proxy(request: Request) -> bool:
     remote = request.client.host if request.client else ""
     try:
-        if any(ipaddress.ip_address(remote) in net for net in TRUSTED_PROXIES):
-            cf_ip = request.headers.get("cf-connecting-ip", "").strip()
-            if cf_ip:
-                return cf_ip
-            xff = request.headers.get("x-forwarded-for", "")
-            if xff:
-                return xff.split(",")[0].strip()
+        return any(ipaddress.ip_address(remote) in net for net in TRUSTED_PROXIES)
     except ValueError:
-        pass
+        return False
+
+
+def get_client_ip(request: Request) -> str:
+    remote = request.client.host if request.client else ""
+    if _is_trusted_proxy(request):
+        cf_ip = request.headers.get("cf-connecting-ip", "").strip()
+        if cf_ip:
+            return cf_ip
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            return xff.split(",")[0].strip()
     return remote or "-"
+
+
+def get_site_url(request: Request) -> str:
+    trusted = _is_trusted_proxy(request)
+    host = request.headers.get("host", "").split(",", 1)[0].strip()
+    if trusted:
+        host = request.headers.get("x-forwarded-host", host).split(",", 1)[0].strip()
+    scheme = request.url.scheme
+    if trusted:
+        proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+        if proto in {"http", "https"}:
+            scheme = proto
+        else:
+            cf_visitor = request.headers.get("cf-visitor", "")
+            if '"scheme":"https"' in cf_visitor:
+                scheme = "https"
+    return f"{scheme}://{host}"
 
 
 BASE_DIR = Path(__file__).parent
@@ -409,6 +431,20 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
     body_html, front_matter = parse_markdown(text, make_md(container_classes))
     vars_ = {**defaults, **front_matter}
     template_name = vars_.pop("template", "default.j2")
+
+    url_path = request.url.path
+    page_dir = url_path if url_path.endswith("/") else str(Path(url_path).parent) + "/"
+    # site_url: defaults/front matter で上書き可能
+    computed_site_url = get_site_url(request)
+    page_vars = {
+        "url_path": url_path,
+        "page_dir": page_dir,
+        "site_url": computed_site_url,
+    }
+    # defaults/front matter の明示値を優先
+    page_vars.update(vars_)
+    vars_ = page_vars
+
     env = make_jinja_env(vhost_dir)
     env.globals["index_of"] = make_index_of(lookup_docs, defaults_docs_dir)
     try:

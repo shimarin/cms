@@ -389,6 +389,8 @@ def generate_sitemap(defaults_docs_dir: Path, lookup_docs: list[Path], request: 
                 continue  # draft
 
             seen.add(url_path)
+            if is_llm_crawler(request) and url_path.endswith(".html"):
+                url_path = url_path[:-5] + ".md"
             lastmod = datetime.datetime.fromtimestamp(md_file.stat().st_mtime, tz=datetime.timezone.utc)
             urls.append(
                 f"  <url>\n"
@@ -403,7 +405,7 @@ def generate_sitemap(defaults_docs_dir: Path, lookup_docs: list[Path], request: 
         + "\n".join(urls) + "\n"
         '</urlset>\n'
     )
-    return Response(body, media_type="application/xml")
+    return Response(body, media_type="application/xml", headers={"Vary": "User-Agent"})
 
 
 def make_client_ip_match_any(request: Request):

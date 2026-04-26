@@ -90,6 +90,11 @@ TOP_TEMPLATES_DIR = BASE_DIR / "templates"
 TOP_LOGS_DIR = BASE_DIR / "logs"
 
 VHOST_OVERRIDE: str | None = os.environ.get("CMS_VHOST_OVERRIDE") or None
+FILE_LOGGING_ENABLED = os.environ.get("CMS_FILE_LOGGING") == "1"
+try:
+    LOG_ROTATION_MIN_BYTES = int(os.environ.get("CMS_LOG_ROTATION_MIN_BYTES", 1024 * 1024))
+except ValueError:
+    LOG_ROTATION_MIN_BYTES = 1024 * 1024
 
 
 _LANG_ALIASES = {
@@ -518,12 +523,35 @@ def _get_logs_dir(vhost_dir: Path | None) -> Path:
     return d
 
 
+class _SizeThresholdTimedRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
+    """TimedRotatingFileHandler that skips rollover when file is smaller than min_bytes."""
+
+    def __init__(self, *args, min_bytes: int = 0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.min_bytes = min_bytes
+
+    def shouldRollover(self, record) -> bool:
+        if not super().shouldRollover(record):
+            return False
+        try:
+            size_ok = Path(self.baseFilename).stat().st_size >= self.min_bytes
+        except FileNotFoundError:
+            size_ok = False
+        if not size_ok:
+            # Advance rolloverAt so we don't re-evaluate on every subsequent write
+            self.rolloverAt = self.computeRollover(int(time.time()))
+            return False
+        return True
+
+
 def get_access_logger(vhost_dir: Path | None) -> logging.Logger:
     key = vhost_dir.name if vhost_dir else "_top"
     logger = logging.getLogger(f"access.{key}")
     if not logger.handlers:
-        handler = logging.handlers.TimedRotatingFileHandler(
-            _get_logs_dir(vhost_dir) / "access_log", when="midnight", backupCount=30, encoding="utf-8"
+        handler = _SizeThresholdTimedRotatingFileHandler(
+            _get_logs_dir(vhost_dir) / "access_log",
+            when="midnight", backupCount=30, encoding="utf-8",
+            min_bytes=LOG_ROTATION_MIN_BYTES,
         )
         handler.setFormatter(logging.Formatter("%(message)s"))
         logger.addHandler(handler)
@@ -544,7 +572,7 @@ def apache_combined_log(request: Request, status: int, size: int, vhost_dir: Pat
         f'{remote} - - [{t}] "{request.method} {path}{qs} HTTP/{proto}" '
         f'{status} {size} "{referer}" "{ua}"'
     )
-    get_access_logger(vhost_dir).info(line)
+    get_access_logger(vhost_dir).info(line) if FILE_LOGGING_ENABLED else None
 
 
 # ---------------------------------------------------------------------------
@@ -740,15 +768,20 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-reload", action="store_true", help="Disable auto-reload (for production)")
-    parser.add_argument("--no-uvicorn-access-log", action="store_true", help="Suppress uvicorn access log (use CMS log only)")
+    parser.add_argument("--file-logging", action="store_true", help="Write access log to logs/ files and suppress uvicorn access log (for production/systemd)")
+    parser.add_argument("--log-rotation-min-bytes", type=int, default=1024 * 1024, metavar="BYTES",
+                        help="Skip log rotation if access_log is smaller than this size (default: 1048576 = 1MB)")
     parser.add_argument("--vhost-override", metavar="HOSTNAME", help="Force a specific vhost regardless of Host header (dev only)")
     args = parser.parse_args()
     if args.vhost_override:
         os.environ["CMS_VHOST_OVERRIDE"] = args.vhost_override
+    if args.file_logging:
+        os.environ["CMS_FILE_LOGGING"] = "1"
+    os.environ["CMS_LOG_ROTATION_MIN_BYTES"] = str(args.log_rotation_min_bytes)
     uvicorn.run(
         "app:app",
         host=args.host,
         port=args.port,
         reload=not args.no_reload,
-        access_log=not args.no_uvicorn_access_log,
+        access_log=not args.file_logging,
     )

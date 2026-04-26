@@ -16,7 +16,7 @@ Markdown→HTMLのオンデマンド変換をするCMS
 python app.py
 
 # 本番・systemd運用時（reload無効、uvicornアクセスログ抑制）
-python app.py --no-reload --no-uvicorn-access-log
+python app.py --no-reload --file-logging
 
 # または uvicorn を直接使う場合
 uvicorn app:app --reload
@@ -220,6 +220,11 @@ Markdown→HTMLレスポンスには以下のヘッダを付与:
 
 Apache combined フォーマット。vhostごとに `logs/access_log` へ出力。
 深夜0時に自動ローテーション、30日分保持。
+ただしローテーション時点でファイルサイズが閾値未満の場合はスキップする（デフォルト: 1MB）。
+閾値は `--log-rotation-min-bytes` 引数で変更可能（0を指定すると常にローテーション）。
+
+ファイルへのアクセスログ出力は `--file-logging` を指定した場合のみ有効になる。
+uvicornアクセスログを出力している場合（デフォルト）はファイルには書き込まない。
 
 リバースプロキシ経由の場合のクライアントIP解決順:
 

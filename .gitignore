@@ -17,3 +17,6 @@ vhosts/
 
 # syncthing
 .stfolder/
+
+# agents
+.codex

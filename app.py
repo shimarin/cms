@@ -827,6 +827,9 @@ async def handle_request(request: Request) -> Response:
         if target.is_file():
             return FileResponse(str(target))
         if target.is_dir():
+            if not request.url.path.endswith("/"):
+                redirect_url = request.url.replace(path=request.url.path + "/")
+                return RedirectResponse(str(redirect_url), status_code=301)
             index_md = target / "index.md"
             index_html = target / "index.html"
             if is_llm_crawler(request) and index_md.is_file():

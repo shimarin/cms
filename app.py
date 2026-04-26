@@ -335,7 +335,7 @@ def generate_feed(url_dir: str, defaults_docs_dir: Path, lookup_docs: list[Path]
     for article in articles:
         url = article["url"]
         if llm and url.endswith(".html"):
-                url = url[:-5] + ".md"
+            url = url[:-5] + ".md"
         link = base_url + url
         pub_date = formatdate(article["date"].timestamp(), usegmt=True)
         items.append(
@@ -359,7 +359,7 @@ def generate_feed(url_dir: str, defaults_docs_dir: Path, lookup_docs: list[Path]
         '  </channel>\n'
         '</rss>\n'
     )
-    return Response(body, media_type="application/rss+xml")
+    return Response(body, media_type="application/rss+xml", headers={"Vary": "User-Agent"})
 
 
 def generate_sitemap(defaults_docs_dir: Path, lookup_docs: list[Path], request: Request) -> Response:

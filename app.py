@@ -334,11 +334,8 @@ def generate_feed(url_dir: str, defaults_docs_dir: Path, lookup_docs: list[Path]
     items = []
     for article in articles:
         url = article["url"]
-        if llm:
-            if url.endswith(".html"):
+        if llm and url.endswith(".html"):
                 url = url[:-5] + ".md"
-            elif url.endswith("/"):
-                url = url + "index.md"
         link = base_url + url
         pub_date = formatdate(article["date"].timestamp(), usegmt=True)
         items.append(

@@ -234,21 +234,84 @@ def extract_front_matter_raw(text: str) -> dict:
         return {}
 
 
-def parse_markdown(text: str, md_instance: MarkdownIt | None = None) -> tuple[str, dict]:
+def _extract_h1_plaintext(tokens) -> tuple[str | None, int | None]:
+    """Find the first H1 in tokens. Return (plain_text_title, heading_open_index).
+
+    The plain text is built from text/code_inline children of the heading's inline
+    token, so inline Markdown decorations (links, emphasis, etc.) are stripped.
+    Returns (None, None) when no usable H1 is found.
+    """
+    for i, token in enumerate(tokens):
+        if token.type != "heading_open" or token.tag != "h1":
+            continue
+        if i + 1 >= len(tokens):
+            return None, None
+        inline_token = tokens[i + 1]
+        if inline_token.type != "inline" or not inline_token.children:
+            return None, None
+        title = "".join(
+            child.content for child in inline_token.children
+            if child.type in ("text", "code_inline")
+        ).strip()
+        return (title or None), i
+    return None, None
+
+
+def parse_markdown_document(
+    text: str,
+    md_instance: MarkdownIt | None = None,
+    defaults: dict | None = None,
+    source_mtime: float | None = None,
+) -> tuple[str, dict]:
+    """Parse Markdown text into (body_html, metadata).
+
+    metadata is the merge of `defaults` and the document's YAML front matter,
+    optionally augmented by body-derived values:
+
+    - h1_as_title: when truthy and front matter has no `title`, the first H1 is
+      extracted as plain text, used as `title`, and removed from body_html.
+    - mtime_as_date: when truthy and front matter has no `date`, `source_mtime`
+      (a POSIX timestamp) is converted to a tz-aware datetime using `timezone`.
+
+    Front matter always wins over body-derived values, which always win over defaults.
+    """
     instance = md_instance or _md_base
+    defaults = defaults or {}
     tokens = instance.parse(text)
-    front_matter_vars = {}
+
+    front_matter: dict = {}
     for token in tokens:
         if token.type == "front_matter":
             try:
                 parsed = yaml.safe_load(token.content)
                 if isinstance(parsed, dict):
-                    front_matter_vars = parsed
+                    front_matter = parsed
             except yaml.YAMLError:
                 pass
             break
+
+    flags = {**defaults, **front_matter}
+
+    if flags.get("h1_as_title") and not front_matter.get("title"):
+        title, idx = _extract_h1_plaintext(tokens)
+        if title and idx is not None:
+            front_matter["title"] = title
+            del tokens[idx:idx + 3]
+
+    if (
+        flags.get("mtime_as_date")
+        and front_matter.get("date") is None
+        and source_mtime is not None
+    ):
+        tz_name = flags.get("timezone")
+        try:
+            tz = ZoneInfo(tz_name) if tz_name else _system_tz()
+        except (ZoneInfoNotFoundError, KeyError):
+            tz = _system_tz()
+        front_matter["date"] = datetime.datetime.fromtimestamp(source_mtime, tz=tz)
+
     body_html = instance.renderer.render(tokens, instance.options, {})
-    return body_html, front_matter_vars
+    return body_html, {**defaults, **front_matter}
 
 
 def load_defaults(docs_dir: Path, md_rel: str) -> dict:
@@ -301,8 +364,11 @@ def make_index_of(lookup_docs: list[Path], defaults_docs_dir: Path):
                     continue
                 md_rel = str(md_file.relative_to(docs_dir))
                 defaults = load_defaults(defaults_docs_dir, md_rel)
-                _, front_matter = parse_markdown(md_file.read_text(encoding="utf-8"))
-                vars_ = {**defaults, **front_matter}
+                _, vars_ = parse_markdown_document(
+                    md_file.read_text(encoding="utf-8"),
+                    defaults=defaults,
+                    source_mtime=md_file.stat().st_mtime,
+                )
                 date = resolve_date(vars_.get("date"), vars_.get("timezone"))
                 if date is None:
                     continue  # draft
@@ -382,8 +448,11 @@ def generate_sitemap(defaults_docs_dir: Path, lookup_docs: list[Path], request: 
                 continue
 
             defaults = load_defaults(defaults_docs_dir, md_rel)
-            _, front_matter = parse_markdown(md_file.read_text(encoding="utf-8"))
-            vars_ = {**defaults, **front_matter}
+            _, vars_ = parse_markdown_document(
+                md_file.read_text(encoding="utf-8"),
+                defaults=defaults,
+                source_mtime=md_file.stat().st_mtime,
+            )
             date = resolve_date(vars_.get("date"), vars_.get("timezone"))
             if date is None:
                 continue  # draft
@@ -439,7 +508,8 @@ def render_error(status_code: int, vhost_dir: Path | None, request: Request | No
 
 
 def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_dir: Path | None, lookup_docs: list[Path], request: Request) -> Response:
-    mtime = md_path.stat().st_mtime
+    file_mtime = md_path.stat().st_mtime
+    mtime = file_mtime
     # テンプレートのmtimeも含めて有効なmtimeを確定する（304判定前に必要）
     text = md_path.read_text(encoding="utf-8")
     defaults = load_defaults(defaults_docs_dir, md_rel)
@@ -474,8 +544,12 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
             pass
 
     container_classes = {**defaults, **raw_fm}.get("container_classes", [])
-    body_html, front_matter = parse_markdown(text, make_md(container_classes))
-    vars_ = {**defaults, **front_matter}
+    body_html, vars_ = parse_markdown_document(
+        text,
+        make_md(container_classes),
+        defaults=defaults,
+        source_mtime=file_mtime,
+    )
     vars_.pop("template", None)
 
     url_path = request.url.path

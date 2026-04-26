@@ -402,8 +402,29 @@ def generate_sitemap(defaults_docs_dir: Path, lookup_docs: list[Path], request: 
     return Response(body, media_type="application/xml")
 
 
-def render_error(status_code: int, vhost_dir: Path | None) -> Response:
+def make_client_ip_match_any(request: Request):
+    """Return a client_ip_match_any(patterns) function bound to the current request."""
+    def client_ip_match_any(patterns) -> bool:
+        client_ip = get_client_ip(request)
+        try:
+            addr = ipaddress.ip_address(client_ip)
+        except ValueError:
+            return False
+        for pattern in patterns or []:
+            try:
+                network = ipaddress.ip_network(str(pattern), strict=False)
+            except ValueError:
+                continue
+            if addr in network:
+                return True
+        return False
+    return client_ip_match_any
+
+
+def render_error(status_code: int, vhost_dir: Path | None, request: Request | None = None) -> Response:
     env = make_jinja_env(vhost_dir)
+    if request is not None:
+        env.globals["client_ip_match_any"] = make_client_ip_match_any(request)
     try:
         tmpl = env.get_template(f"{status_code}.j2")
         return HTMLResponse(tmpl.render(status_code=status_code), status_code=status_code)
@@ -463,6 +484,7 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
     vars_ = page_vars
 
     env.globals["index_of"] = make_index_of(lookup_docs, defaults_docs_dir)
+    env.globals["client_ip_match_any"] = make_client_ip_match_any(request)
     try:
         tmpl = env.get_template(template_name)
     except Exception:
@@ -736,7 +758,7 @@ async def handle_request(request: Request) -> Response:
             break  # directory found but no index; don't fall back to next docs_dir
 
     if path.endswith(".html"):
-        return render_error(404, vhost_dir)
+        return render_error(404, vhost_dir, request)
     return Response("Not Found", status_code=404, media_type="text/plain")
 
 

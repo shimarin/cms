@@ -11,13 +11,13 @@ ClaudeBot・GPTBot・ChatGPT-User・PerplexityBot・meta-externalagent のUser-A
 クローラーがディレクトリにアクセスした場合、`index.md` を `text/markdown` で
 そのまま返す。HTMLレンダリングは行わない。
 
-また、MJ12bot のような積極的（Eager）なクローラーも同じ枠に含める。
+また、MJ12bot のような積極的（Eager）なクローラーも同様にMarkdownを返す対象とする。
 これらはLLMクローラーではないが、アクセス量が多く負荷になりやすいため、
 HTMLよりも構造がシンプルなMarkdownを返すことでダウンロードサイズを減らし
 トラフィックを抑制することを意図している。
 
-**方針:** LLMクローラーと同様に「Markdownを与えてよいEagerなボット」は
-`LLM_CRAWLERS` タプルにまとめて管理する。
+**方針:** LLMクローラーは `LLM_CRAWLERS`、Eagerなボットは `EAGER_CRAWLERS` として
+別々に定義し、判定時に連結する。
 
 ## 理由
 

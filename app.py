@@ -572,7 +572,7 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
     return HTMLResponse(tmpl.render(body=body_html, **vars_), headers=cache_headers)
 
 
-LLM_CRAWLERS = ("ClaudeBot", "GPTBot", "ChatGPT-User", "PerplexityBot", "meta-externalagent", "MJ12bot")
+LLM_CRAWLERS = ("ClaudeBot", "GPTBot", "ChatGPT-User", "PerplexityBot", "meta-externalagent", "MJ12bot", "trendictionbot", "Baiduspider", "Sogou web spider")
 
 
 def is_llm_crawler(request: Request) -> bool:

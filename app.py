@@ -873,6 +873,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--unix-socket", metavar="PATH", help="Listen on a Unix domain socket instead of host:port")
     parser.add_argument("--no-reload", action="store_true", help="Disable auto-reload (for production)")
     parser.add_argument("--file-logging", action="store_true", help="Write access log to logs/ files and suppress uvicorn access log (for production/systemd)")
     parser.add_argument("--log-rotation-min-bytes", type=int, default=1024 * 1024, metavar="BYTES",
@@ -884,10 +885,13 @@ if __name__ == "__main__":
     if args.file_logging:
         os.environ["CMS_FILE_LOGGING"] = "1"
     os.environ["CMS_LOG_ROTATION_MIN_BYTES"] = str(args.log_rotation_min_bytes)
-    uvicorn.run(
-        "app:app",
-        host=args.host,
-        port=args.port,
+    run_kwargs: dict = dict(
         reload=not args.no_reload,
         access_log=not args.file_logging,
     )
+    if args.unix_socket:
+        run_kwargs["uds"] = args.unix_socket
+    else:
+        run_kwargs["host"] = args.host
+        run_kwargs["port"] = args.port
+    uvicorn.run("app:app", **run_kwargs)

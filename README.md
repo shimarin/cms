@@ -18,9 +18,14 @@ python app.py
 # 本番・systemd運用時（reload無効、uvicornアクセスログ抑制）
 python app.py --no-reload --file-logging
 
+# UNIXドメインソケットで待受（リバースプロキシとの連携など）
+python app.py --unix-socket /run/cms/app.sock --no-reload --file-logging
+
 # または uvicorn を直接使う場合
 uvicorn app:app --reload
 ```
+
+`--unix-socket` を指定した場合、`--host` / `--port` は無視される。
 
 ## ディレクトリ構成
 

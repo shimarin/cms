@@ -823,6 +823,9 @@ async def handle_request(request: Request) -> Response:
         for docs_dir in lookup_docs:
             md_path = docs_dir / md_rel
             if md_path.is_file():
+                if is_llm_crawler(request):
+                    md_url = request.url.replace(path="/" + md_rel)
+                    return RedirectResponse(str(md_url), status_code=302, headers={"Vary": "User-Agent"})
                 return render_md_file(md_path, defaults_docs_dir, md_rel, vhost_dir, lookup_docs, request)
 
     # Static files and directory indexes

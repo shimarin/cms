@@ -47,7 +47,11 @@ TRUSTED_PROXIES: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
 
 
 def _is_trusted_proxy(request: Request) -> bool:
-    remote = request.client.host if request.client else ""
+    # Unix domain socket connections have no client address; always trust them
+    # since only local processes can connect via a socket file.
+    if not request.client:
+        return True
+    remote = request.client.host
     try:
         return any(ipaddress.ip_address(remote) in net for net in TRUSTED_PROXIES)
     except ValueError:

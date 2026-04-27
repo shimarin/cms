@@ -58,16 +58,34 @@ def _is_trusted_proxy(request: Request) -> bool:
         return False
 
 
-def get_client_ip(request: Request) -> str:
+def _get_client_ip_and_vary(request: Request) -> tuple[str, tuple[str, ...]]:
+    """Return (client_ip, vary_fields) where vary_fields lists every request header
+    whose presence/value could have affected the IP decision.
+
+    - CF-Connecting-IP used (trusted proxy):
+        only CF-Connecting-IP matters (XFF is ignored when CF is present).
+    - X-Forwarded-For used (trusted proxy, no CF):
+        both CF-Connecting-IP and X-Forwarded-For matter (adding CF would change
+        the result).
+    - Trusted proxy but neither header present:
+        both could change the result if added.
+    - Untrusted source (direct connection):
+        no proxy header is consulted, so no Vary fields are required.
+    """
     remote = request.client.host if request.client else ""
     if _is_trusted_proxy(request):
         cf_ip = request.headers.get("cf-connecting-ip", "").strip()
         if cf_ip:
-            return cf_ip
+            return cf_ip, ("CF-Connecting-IP",)
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            return xff.split(",")[0].strip()
-    return remote or "-"
+            return xff.split(",")[0].strip(), ("CF-Connecting-IP", "X-Forwarded-For")
+        return remote or "-", ("CF-Connecting-IP", "X-Forwarded-For")
+    return remote or "-", ()
+
+
+def get_client_ip(request: Request) -> str:
+    return _get_client_ip_and_vary(request)[0]
 
 
 def get_site_url(request: Request) -> str:
@@ -481,10 +499,18 @@ def generate_sitemap(defaults_docs_dir: Path, lookup_docs: list[Path], request: 
     return Response(body, media_type="application/xml", headers={"Vary": "User-Agent"})
 
 
-def make_client_ip_match_any(request: Request):
-    """Return a client_ip_match_any(patterns) function bound to the current request."""
+def make_client_ip_match_any(request: Request, vary_fields: set[str] | None = None):
+    """Return a client_ip_match_any(patterns) function bound to the current request.
+
+    If vary_fields is provided, the first call automatically records the request
+    header that was actually used to determine the client IP (e.g. 'X-Forwarded-For'
+    or 'CF-Connecting-IP').  When the IP comes from a direct TCP connection no field
+    is added, because no caching proxy is involved in that case.
+    """
     def client_ip_match_any(patterns) -> bool:
-        client_ip = get_client_ip(request)
+        client_ip, used_vary = _get_client_ip_and_vary(request)
+        if vary_fields is not None and used_vary:
+            vary_fields.update(used_vary)
         try:
             addr = ipaddress.ip_address(client_ip)
         except ValueError:
@@ -502,11 +528,16 @@ def make_client_ip_match_any(request: Request):
 
 def render_error(status_code: int, vhost_dir: Path | None, request: Request | None = None) -> Response:
     env = make_jinja_env(vhost_dir)
+    vary_fields: set[str] = set()
     if request is not None:
-        env.globals["client_ip_match_any"] = make_client_ip_match_any(request)
+        env.globals["client_ip_match_any"] = make_client_ip_match_any(request, vary_fields)
     try:
         tmpl = env.get_template(f"{status_code}.j2")
-        return HTMLResponse(tmpl.render(status_code=status_code), status_code=status_code)
+        html_body = tmpl.render(status_code=status_code)
+        headers = {}
+        if vary_fields:
+            headers["Vary"] = ", ".join(sorted(vary_fields))
+        return HTMLResponse(html_body, status_code=status_code, headers=headers)
     except Exception:
         return Response(str(status_code), status_code=status_code, media_type="text/plain")
 
@@ -579,16 +610,20 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
     vars_ = page_vars
 
     env.globals["index_of"] = make_index_of(lookup_docs, defaults_docs_dir)
-    env.globals["client_ip_match_any"] = make_client_ip_match_any(request)
+    vary_fields: set[str] = set()
+    env.globals["client_ip_match_any"] = make_client_ip_match_any(request, vary_fields)
     try:
         tmpl = env.get_template(template_name)
     except Exception:
         return HTMLResponse(body_html, headers=cache_headers)
-    return HTMLResponse(tmpl.render(body=body_html, **vars_), headers=cache_headers)
+    html_body = tmpl.render(body=body_html, **vars_)
+    if vary_fields:
+        cache_headers["Vary"] = ", ".join(sorted(vary_fields))
+    return HTMLResponse(html_body, headers=cache_headers)
 
 
-LLM_CRAWLERS = ("ClaudeBot", "GPTBot", "ChatGPT-User", "PerplexityBot", "meta-externalagent", "Bytespider", "OAI-SearchBot")
-EAGER_CRAWLERS = ("MJ12bot", "trendictionbot", "Baiduspider", "Sogou web spider", "SemrushBot", "Faraday", "python-requests", "Mediatoolkitbot", "Barkrowler")
+LLM_CRAWLERS = ("ClaudeBot", "GPTBot", "ChatGPT-User", "PerplexityBot", "meta-externalagent", "Bytespider", "OAI-SearchBot", "Amazonbot")
+EAGER_CRAWLERS = ("MJ12bot", "trendictionbot", "Baiduspider", "Sogou web spider", "SemrushBot", "Faraday", "python-requests", "python-httpx", "Mediatoolkitbot", "Barkrowler", "ICC-Crawler", "AhrefsBot", "PetalBot")
 
 
 def is_llm_crawler(request: Request) -> bool:

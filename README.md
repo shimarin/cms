@@ -124,6 +124,8 @@ description: ページの説明
 template: custom.j2   # 省略時は default.j2
 timezone: Asia/Tokyo  # 省略時はシステムTZ
 date: 2026-04-25      # 記事の公開日（省略するとドラフト扱い）
+rss: /blog/feed.xml   # RSSフィードURL（省略時はLink:ヘッダなし）
+sitemap: /sitemap.xml # サイトマップURL（省略時はLink:ヘッダなし）
 ---
 ```
 
@@ -275,8 +277,12 @@ Markdown→HTMLレスポンスには以下のヘッダを付与:
 - `Last-Modified`: `.md` ファイルのmtime
 - `ETag`: mtimeの整数値
 - `Cache-Control: no-cache`
+- `Link: <url>; rel="alternate"; type="application/rss+xml"` — `rss` が設定されている場合
+- `Link: <url>; rel="sitemap"` — `sitemap` が設定されている場合
 
-`If-None-Match` / `If-Modified-Since` による304レスポンスに対応。
+両方設定されている場合は1つの `Link:` ヘッダーにカンマ区切りで結合する。
+
+`If-None-Match` / `If-Modified-Since` による304レスポンスにも同じヘッダセット（`Link` を含む）を付与する。
 
 ## アクセスログ
 

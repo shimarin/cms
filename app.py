@@ -511,6 +511,16 @@ def render_error(status_code: int, vhost_dir: Path | None, request: Request | No
         return Response(str(status_code), status_code=status_code, media_type="text/plain")
 
 
+def _link_headers(rss: str | None, sitemap: str | None = None) -> dict:
+    """Return a dict with a Link header built from rss/sitemap values, or empty dict if both falsy."""
+    parts = []
+    if rss:
+        parts.append(f'<{rss}>; rel="alternate"; type="application/rss+xml"')
+    if sitemap:
+        parts.append(f'<{sitemap}>; rel="sitemap"')
+    return {"Link": ", ".join(parts)} if parts else {}
+
+
 def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_dir: Path | None, lookup_docs: list[Path], request: Request) -> Response:
     file_mtime = md_path.stat().st_mtime
     mtime = file_mtime
@@ -533,6 +543,7 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
         "Last-Modified": last_modified,
         "ETag": etag,
         "Cache-Control": "no-cache",
+        **_link_headers({**defaults, **raw_fm}.get("rss"), {**defaults, **raw_fm}.get("sitemap")),
     }
 
     # 304 check: ETag takes priority over Last-Modified
@@ -832,6 +843,12 @@ async def handle_request(request: Request) -> Response:
     for docs_dir in lookup_docs:
         target = docs_dir / path
         if target.is_file():
+            if path.endswith(".md"):
+                md_rel = path
+                defaults = load_defaults(defaults_docs_dir, md_rel)
+                raw_fm = extract_front_matter_raw(target.read_text(encoding="utf-8"))
+                merged = {**defaults, **raw_fm}
+                return FileResponse(str(target), headers=_link_headers(merged.get("rss"), merged.get("sitemap")))
             return FileResponse(str(target))
         if target.is_dir():
             if not request.url.path.endswith("/"):
@@ -840,7 +857,11 @@ async def handle_request(request: Request) -> Response:
             index_md = target / "index.md"
             index_html = target / "index.html"
             if is_llm_crawler(request) and index_md.is_file():
-                return FileResponse(str(index_md), media_type="text/markdown")
+                md_rel = str(Path(path) / "index.md") if path else "index.md"
+                defaults = load_defaults(defaults_docs_dir, md_rel)
+                raw_fm = extract_front_matter_raw(index_md.read_text(encoding="utf-8"))
+                merged = {**defaults, **raw_fm}
+                return FileResponse(str(index_md), media_type="text/markdown", headers=_link_headers(merged.get("rss"), merged.get("sitemap")))
             if index_html.is_file():
                 return FileResponse(str(index_html))
             if index_md.is_file():

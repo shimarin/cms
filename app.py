@@ -577,7 +577,7 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
 
 
 LLM_CRAWLERS = ("ClaudeBot", "GPTBot", "ChatGPT-User", "PerplexityBot", "meta-externalagent", "Bytespider", "OAI-SearchBot")
-EAGER_CRAWLERS = ("MJ12bot", "trendictionbot", "Baiduspider", "Sogou web spider", "SemrushBot", "Faraday", "python-requests", "Mediatoolkitbot")
+EAGER_CRAWLERS = ("MJ12bot", "trendictionbot", "Baiduspider", "Sogou web spider", "SemrushBot", "Faraday", "python-requests", "Mediatoolkitbot", "Barkrowler")
 
 
 def is_llm_crawler(request: Request) -> bool:

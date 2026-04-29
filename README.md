@@ -207,8 +207,7 @@ IPv4/IPv6の単一アドレスとCIDR表記の両方に対応。
   自動的に付与される（IP判定に影響しうる `CF-Connecting-IP` /
   `X-Forwarded-For` を共有キャッシュへ通知する）。詳細は ADR-010 参照
 - **セキュリティ境界・認可・非公開情報の出し分けには使わないこと。** 主に
-  解析タグの抑制など軽微な出し分け用途を想定している。条件付きGETで 304 を
-  返す場合、テンプレート実行由来の `Vary:` が付かないという既知の制約がある
+  解析タグの抑制など軽微な出し分け用途を想定している。
 
 ### カスタムエラーページ
 
@@ -241,6 +240,9 @@ IPv4/IPv6の単一アドレスとCIDR表記の両方に対応。
 - `date:` のないファイルはドラフトとして除外される（デフォルト: `index.md` も除外）
 - 結果は `date` 降順ソート済み
 - サブディレクトリを再帰的にスキャンする
+- `index_of()` を呼んだMarkdown→HTMLレスポンスは、配下ドキュメントの追加・更新を
+  常に反映するため `Cache-Control: no-store` になり、`Last-Modified` / `ETag` は
+  付与されない。詳細は ADR-011 参照
 
 #### dateフィールドの書式
 
@@ -280,8 +282,8 @@ date: 2026-04-25T10:00:00+09:00
 
 Markdown→HTMLレスポンスには以下のヘッダを付与:
 
-- `Last-Modified`: `.md` ファイルのmtime
-- `ETag`: mtimeの整数値
+- `Last-Modified`: `.md` ファイルと採用テンプレートのmtime最大値
+- `ETag`: mtime最大値の整数値
 - `Cache-Control: no-cache`
 - `Link: <url>; rel="alternate"; type="application/rss+xml"` — `rss` が設定されている場合
 - `Link: <url>; rel="sitemap"` — `sitemap` が設定されている場合
@@ -289,6 +291,10 @@ Markdown→HTMLレスポンスには以下のヘッダを付与:
 両方設定されている場合は1つの `Link:` ヘッダーにカンマ区切りで結合する。
 
 `If-None-Match` / `If-Modified-Since` による304レスポンスにも同じヘッダセット（`Link` を含む）を付与する。
+
+テンプレート内で `index_of()` が1回でも呼ばれた場合、そのレスポンスは
+`Cache-Control: no-store` になり、`Last-Modified` / `ETag` は付与しない。
+条件付きGETでも304を返さず、常に本文を再生成する。
 
 ## アクセスログ
 

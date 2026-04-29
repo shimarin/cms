@@ -608,16 +608,33 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
             headers["Vary"] = ", ".join(sorted(vary_fields))
         return headers
 
-    try:
-        tmpl = env.get_template(template_name)
-    except Exception:
-        # テンプレートが取得できない場合は本文のみを返す。index_of は未呼出なのでキャッシュ可能
+    def _cacheable_headers_and_304() -> tuple[dict, Response | None]:
         etag = f'"{int(mtime)}"'
-        cache_headers = _finalize_headers({
+        headers = _finalize_headers({
             "Last-Modified": formatdate(mtime, usegmt=True),
             "ETag": etag,
             "Cache-Control": "no-cache",
         })
+        # 304 check: ETag takes priority over Last-Modified
+        if_none_match = request.headers.get("if-none-match", "")
+        if if_none_match:
+            if any(e.strip() == etag for e in if_none_match.split(",")):
+                return headers, Response(status_code=304, headers=headers)
+        elif ims := request.headers.get("if-modified-since", ""):
+            try:
+                if int(mtime) <= int(parsedate_to_datetime(ims).timestamp()):
+                    return headers, Response(status_code=304, headers=headers)
+            except Exception:
+                pass
+        return headers, None
+
+    try:
+        tmpl = env.get_template(template_name)
+    except Exception:
+        # テンプレートが取得できない場合は本文のみを返す。index_of は未呼出なのでキャッシュ可能
+        cache_headers, not_modified = _cacheable_headers_and_304()
+        if not_modified is not None:
+            return not_modified
         return HTMLResponse(body_html, headers=cache_headers)
     html_body = tmpl.render(body=body_html, **vars_)
 
@@ -626,24 +643,9 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
         cache_headers = _finalize_headers({"Cache-Control": "no-store"})
         return HTMLResponse(html_body, headers=cache_headers)
 
-    etag = f'"{int(mtime)}"'
-    last_modified = formatdate(mtime, usegmt=True)
-    cache_headers = _finalize_headers({
-        "Last-Modified": last_modified,
-        "ETag": etag,
-        "Cache-Control": "no-cache",
-    })
-    # 304 check: ETag takes priority over Last-Modified
-    if_none_match = request.headers.get("if-none-match", "")
-    if if_none_match:
-        if any(e.strip() == etag for e in if_none_match.split(",")):
-            return Response(status_code=304, headers=cache_headers)
-    elif ims := request.headers.get("if-modified-since", ""):
-        try:
-            if int(mtime) <= int(parsedate_to_datetime(ims).timestamp()):
-                return Response(status_code=304, headers=cache_headers)
-        except Exception:
-            pass
+    cache_headers, not_modified = _cacheable_headers_and_304()
+    if not_modified is not None:
+        return not_modified
     return HTMLResponse(html_body, headers=cache_headers)
 
 

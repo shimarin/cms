@@ -555,7 +555,6 @@ def _link_headers(rss: str | None, sitemap: str | None = None) -> dict:
 def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_dir: Path | None, lookup_docs: list[Path], request: Request) -> Response:
     file_mtime = md_path.stat().st_mtime
     mtime = file_mtime
-    # テンプレートのmtimeも含めて有効なmtimeを確定する（304判定前に必要）
     text = md_path.read_text(encoding="utf-8")
     defaults = load_defaults(defaults_docs_dir, md_rel)
     raw_fm = extract_front_matter_raw(text)
@@ -568,26 +567,7 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
     except Exception:
         pass
 
-    etag = f'"{int(mtime)}"'
-    last_modified = formatdate(mtime, usegmt=True)
-    cache_headers = {
-        "Last-Modified": last_modified,
-        "ETag": etag,
-        "Cache-Control": "no-cache",
-        **_link_headers({**defaults, **raw_fm}.get("rss"), {**defaults, **raw_fm}.get("sitemap")),
-    }
-
-    # 304 check: ETag takes priority over Last-Modified
-    if_none_match = request.headers.get("if-none-match", "")
-    if if_none_match:
-        if any(e.strip() == etag for e in if_none_match.split(",")):
-            return Response(status_code=304, headers=cache_headers)
-    elif ims := request.headers.get("if-modified-since", ""):
-        try:
-            if int(mtime) <= int(parsedate_to_datetime(ims).timestamp()):
-                return Response(status_code=304, headers=cache_headers)
-        except Exception:
-            pass
+    link_headers = _link_headers({**defaults, **raw_fm}.get("rss"), {**defaults, **raw_fm}.get("sitemap"))
 
     container_classes = {**defaults, **raw_fm}.get("container_classes", [])
     body_html, vars_ = parse_markdown_document(
@@ -609,21 +589,66 @@ def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_di
     page_vars.update(vars_)
     vars_ = page_vars
 
-    env.globals["index_of"] = make_index_of(lookup_docs, defaults_docs_dir)
+    # index_of を一度でも呼んだページは内容が動的に変動しうるためキャッシュ対象外にする
+    index_of_used = False
+    base_index_of = make_index_of(lookup_docs, defaults_docs_dir)
+    def index_of_tracked(*args, **kwargs):
+        nonlocal index_of_used
+        index_of_used = True
+        return base_index_of(*args, **kwargs)
+    env.globals["index_of"] = index_of_tracked
     vary_fields: set[str] = set()
     env.globals["client_ip_match_any"] = make_client_ip_match_any(request, vary_fields)
+
+    def _finalize_headers(extra: dict | None = None) -> dict:
+        headers = {**link_headers}
+        if extra:
+            headers.update(extra)
+        if vary_fields:
+            headers["Vary"] = ", ".join(sorted(vary_fields))
+        return headers
+
     try:
         tmpl = env.get_template(template_name)
     except Exception:
+        # テンプレートが取得できない場合は本文のみを返す。index_of は未呼出なのでキャッシュ可能
+        etag = f'"{int(mtime)}"'
+        cache_headers = _finalize_headers({
+            "Last-Modified": formatdate(mtime, usegmt=True),
+            "ETag": etag,
+            "Cache-Control": "no-cache",
+        })
         return HTMLResponse(body_html, headers=cache_headers)
     html_body = tmpl.render(body=body_html, **vars_)
-    if vary_fields:
-        cache_headers["Vary"] = ", ".join(sorted(vary_fields))
+
+    if index_of_used:
+        # ディレクトリ配下の更新を反映するため、検証子を付けず常に再取得させる
+        cache_headers = _finalize_headers({"Cache-Control": "no-store"})
+        return HTMLResponse(html_body, headers=cache_headers)
+
+    etag = f'"{int(mtime)}"'
+    last_modified = formatdate(mtime, usegmt=True)
+    cache_headers = _finalize_headers({
+        "Last-Modified": last_modified,
+        "ETag": etag,
+        "Cache-Control": "no-cache",
+    })
+    # 304 check: ETag takes priority over Last-Modified
+    if_none_match = request.headers.get("if-none-match", "")
+    if if_none_match:
+        if any(e.strip() == etag for e in if_none_match.split(",")):
+            return Response(status_code=304, headers=cache_headers)
+    elif ims := request.headers.get("if-modified-since", ""):
+        try:
+            if int(mtime) <= int(parsedate_to_datetime(ims).timestamp()):
+                return Response(status_code=304, headers=cache_headers)
+        except Exception:
+            pass
     return HTMLResponse(html_body, headers=cache_headers)
 
 
 LLM_CRAWLERS = ("ClaudeBot", "GPTBot", "ChatGPT-User", "PerplexityBot", "meta-externalagent", "Bytespider", "OAI-SearchBot", "Amazonbot")
-EAGER_CRAWLERS = ("MJ12bot", "trendictionbot", "Baiduspider", "Sogou web spider", "SemrushBot", "Faraday", "python-requests", "python-httpx", "Go-http-client", "Mediatoolkitbot", "Barkrowler", "ICC-Crawler", "AhrefsBot", "PetalBot", "YandexBot", "Presto")
+EAGER_CRAWLERS = ("MJ12bot", "trendictionbot", "Baiduspider", "Sogou web spider", "SemrushBot", "Faraday", "python-requests", "python-httpx", "Go-http-client", "Mediatoolkitbot", "Barkrowler", "ICC-Crawler", "AhrefsBot", "PetalBot", "YandexBot", "Presto", "DuckDuckBot", "Iframely", "YaBrowser")
 
 
 def is_llm_crawler(request: Request) -> bool:

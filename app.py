@@ -934,7 +934,7 @@ def load_api_settings(vhost_dir: Path | None) -> dict:
     return {}
 
 
-def send_inquiry_email(data: dict, settings: dict, vhost_dir: Path | None, extra_headers: dict | None = None) -> None:
+def send_inquiry_email(data: dict, settings: dict, vhost_dir: Path | None, extra_headers: dict | None = None, subject_prefix: str = "") -> None:
     smtp_cfg = settings.get("smtp", {})
     inquiry_cfg = settings.get("inquiry", {})
 
@@ -955,6 +955,9 @@ def send_inquiry_email(data: dict, settings: dict, vhost_dir: Path | None, extra
     else:
         subject = inquiry_cfg.get("default_subject", "お問い合わせ")
         body = rendered
+
+    if subject_prefix:
+        subject = f"{subject_prefix} {subject}"
 
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
@@ -1010,10 +1013,12 @@ async def api_inquiry(request: Request) -> Response:
 
         try:
             extra_headers = {}
+            subject_prefix = ""
             if is_bot:
                 extra_headers["Importance"] = "low"
                 extra_headers["X-Priority"] = "5"
-            send_inquiry_email(data, settings, vhost_dir, extra_headers=extra_headers)
+                subject_prefix = inquiry_cfg.get("honeypot_subject_prefix", "[Bot]")
+            send_inquiry_email(data, settings, vhost_dir, extra_headers=extra_headers, subject_prefix=subject_prefix)
         except Exception as e:
             logging.getLogger("error").error("inquiry email failed: %s", e)
             return JSONResponse({"error": "failed to send"}, status_code=500)

@@ -31,7 +31,9 @@
 ボット検出時の動作は `inquiry.honeypot_action` で制御する。
 
 - `drop` (デフォルト): メール送信せずに `{"ok": true}` を返す（ボットに気づかせない）。
-- `archive`: `Importance: low` および `X-Priority: 5` ヘッダを付与してメール送信する。MUA側での自動アーカイブ等に利用できる。
+- `archive`: `Importance: low` および `X-Priority: 5` ヘッダを付与し、さらに件名に接頭辞（デフォルト: `[Bot]`）を付けてメール送信する。Gmailのフィルタによる自動アーカイブ等に利用できる。
+
+接頭辞は `inquiry.honeypot_subject_prefix` でカスタマイズ可能。
 
 レートリミットより実装が単純で、フォームの構造を知らないボットに有効。
 

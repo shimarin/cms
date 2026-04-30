@@ -8,12 +8,15 @@ import datetime
 import html
 import secrets
 import smtplib
+import mimetypes
+from io import BytesIO
 from email.utils import formatdate, parsedate_to_datetime
 from email.mime.text import MIMEText
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pygments import highlight
 from pygments.lexers import get_lexer_by_name, TextLexer
 from pygments.formatters import HtmlFormatter
@@ -552,6 +555,149 @@ def _link_headers(rss: str | None, sitemap: str | None = None) -> dict:
     return {"Link": ", ".join(parts)} if parts else {}
 
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+IMAGE_RESIZE_QUERY_KEYS = {"w", "width", "h", "height", "fit"}
+IMAGE_MAX_DIMENSION = 4096
+IMAGE_RESAMPLE = Image.Resampling.LANCZOS
+
+
+def _is_image_resize_request(path: str, request: Request) -> bool:
+    if Path(path).suffix.lower() not in IMAGE_EXTENSIONS:
+        return False
+    return any(key in request.query_params for key in IMAGE_RESIZE_QUERY_KEYS)
+
+
+def _parse_image_dimension(request: Request, short_key: str, long_key: str) -> tuple[int | None, str | None]:
+    short_value = request.query_params.get(short_key)
+    long_value = request.query_params.get(long_key)
+    if short_value and long_value and short_value != long_value:
+        return None, f"{short_key} and {long_key} must not conflict"
+    value = short_value or long_value
+    if value is None or value == "":
+        return None, None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None, f"{short_key} must be an integer"
+    if parsed < 1 or parsed > IMAGE_MAX_DIMENSION:
+        return None, f"{short_key} must be between 1 and {IMAGE_MAX_DIMENSION}"
+    return parsed, None
+
+
+def _parse_image_resize_params(request: Request) -> tuple[dict | None, Response | None]:
+    width, error = _parse_image_dimension(request, "w", "width")
+    if error:
+        return None, Response(error, status_code=400, media_type="text/plain")
+    height, error = _parse_image_dimension(request, "h", "height")
+    if error:
+        return None, Response(error, status_code=400, media_type="text/plain")
+    if width is None and height is None:
+        return None, Response("w or h is required", status_code=400, media_type="text/plain")
+
+    fit = request.query_params.get("fit")
+    if fit is None:
+        fit = "cover" if width is not None and height is not None else "inside"
+    fit = fit.lower()
+    if fit not in {"cover", "contain", "inside"}:
+        return None, Response("fit must be cover, contain, or inside", status_code=400, media_type="text/plain")
+    if fit == "cover" and (width is None or height is None):
+        return None, Response("fit=cover requires both w and h", status_code=400, media_type="text/plain")
+
+    normalized = f"w={width or ''};h={height or ''};fit={fit}"
+    return {"width": width, "height": height, "fit": fit, "normalized": normalized}, None
+
+
+def _image_cache_headers_and_304(request: Request, source_path: Path, normalized_params: str) -> tuple[dict, Response | None]:
+    stat = source_path.stat()
+    etag = f'"img-{stat.st_mtime_ns}-{stat.st_size}-{normalized_params}"'
+    headers = {
+        "Last-Modified": formatdate(stat.st_mtime, usegmt=True),
+        "ETag": etag,
+        "Cache-Control": "public, no-cache",
+    }
+
+    if_none_match = request.headers.get("if-none-match", "")
+    if if_none_match:
+        candidates = [candidate.strip() for candidate in if_none_match.split(",")]
+        if "*" in candidates or etag in candidates or f"W/{etag}" in candidates:
+            return headers, Response(status_code=304, headers=headers)
+    elif ims := request.headers.get("if-modified-since", ""):
+        try:
+            if int(stat.st_mtime) <= int(parsedate_to_datetime(ims).timestamp()):
+                return headers, Response(status_code=304, headers=headers)
+        except Exception:
+            pass
+    return headers, None
+
+
+def _resize_dimensions(original: tuple[int, int], width: int | None, height: int | None, allow_upscale: bool) -> tuple[int, int]:
+    orig_w, orig_h = original
+    if width is None:
+        scale = height / orig_h
+    elif height is None:
+        scale = width / orig_w
+    else:
+        scale = min(width / orig_w, height / orig_h)
+    if not allow_upscale:
+        scale = min(scale, 1)
+    return (max(1, round(orig_w * scale)), max(1, round(orig_h * scale)))
+
+
+def _render_resized_image(source_path: Path, params: dict) -> tuple[bytes, str] | Response:
+    try:
+        with Image.open(source_path) as image:
+            if getattr(image, "is_animated", False):
+                return Response("Animated images are not supported for resizing", status_code=415, media_type="text/plain")
+            source_format = image.format or source_path.suffix.lstrip(".").upper()
+            transformed = ImageOps.exif_transpose(image)
+            width = params["width"]
+            height = params["height"]
+            fit = params["fit"]
+
+            if fit == "cover":
+                transformed = ImageOps.fit(transformed, (width, height), method=IMAGE_RESAMPLE)
+            else:
+                size = _resize_dimensions(transformed.size, width, height, allow_upscale=(fit == "contain"))
+                transformed = transformed.resize(size, IMAGE_RESAMPLE)
+
+            output = BytesIO()
+            save_kwargs = {}
+            if source_format in {"JPEG", "JPG"}:
+                source_format = "JPEG"
+                if transformed.mode not in {"RGB", "L"}:
+                    transformed = transformed.convert("RGB")
+                save_kwargs.update({"quality": 85, "optimize": True})
+            elif source_format == "PNG":
+                save_kwargs["optimize"] = True
+            elif source_format == "WEBP":
+                save_kwargs.update({"quality": 85, "method": 6})
+            transformed.save(output, format=source_format, **save_kwargs)
+    except UnidentifiedImageError:
+        return Response("Unsupported image file", status_code=415, media_type="text/plain")
+    except OSError:
+        return Response("Failed to process image", status_code=415, media_type="text/plain")
+
+    media_type = mimetypes.guess_type(source_path.name)[0] or "application/octet-stream"
+    return output.getvalue(), media_type
+
+
+def render_resized_image(source_path: Path, request: Request) -> Response:
+    params, error_response = _parse_image_resize_params(request)
+    if error_response is not None:
+        return error_response
+
+    cache_headers, not_modified = _image_cache_headers_and_304(request, source_path, params["normalized"])
+    if not_modified is not None:
+        return not_modified
+
+    rendered = _render_resized_image(source_path, params)
+    if isinstance(rendered, Response):
+        return rendered
+    body, media_type = rendered
+    headers = {**cache_headers, "Content-Length": str(len(body))}
+    return Response(body, media_type=media_type, headers=headers)
+
+
 def render_md_file(md_path: Path, defaults_docs_dir: Path, md_rel: str, vhost_dir: Path | None, lookup_docs: list[Path], request: Request) -> Response:
     file_mtime = md_path.stat().st_mtime
     mtime = file_mtime
@@ -905,6 +1051,8 @@ async def handle_request(request: Request) -> Response:
     for docs_dir in lookup_docs:
         target = docs_dir / path
         if target.is_file():
+            if _is_image_resize_request(path, request):
+                return render_resized_image(target, request)
             if path.endswith(".md"):
                 md_rel = path
                 defaults = load_defaults(defaults_docs_dir, md_rel)

@@ -934,7 +934,7 @@ def load_api_settings(vhost_dir: Path | None) -> dict:
     return {}
 
 
-def send_inquiry_email(data: dict, settings: dict, vhost_dir: Path | None) -> None:
+def send_inquiry_email(data: dict, settings: dict, vhost_dir: Path | None, extra_headers: dict | None = None) -> None:
     smtp_cfg = settings.get("smtp", {})
     inquiry_cfg = settings.get("inquiry", {})
 
@@ -960,6 +960,10 @@ def send_inquiry_email(data: dict, settings: dict, vhost_dir: Path | None) -> No
     msg["Subject"] = subject
     msg["From"] = smtp_cfg.get("from", smtp_cfg.get("username", ""))
     msg["To"] = inquiry_cfg.get("to", "")
+
+    if extra_headers:
+        for k, v in extra_headers.items():
+            msg[k] = v
 
     host = smtp_cfg.get("host", "localhost")
     port = int(smtp_cfg.get("port", 587))
@@ -995,11 +999,21 @@ async def api_inquiry(request: Request) -> Response:
             data = await request.json()
         except Exception:
             return JSONResponse({"error": "invalid json"}, status_code=400)
-        honeypot = settings.get("inquiry", {}).get("honeypot")
-        if honeypot and data.get(honeypot):
+
+        inquiry_cfg = settings.get("inquiry", {})
+        honeypot = inquiry_cfg.get("honeypot")
+        is_bot = bool(honeypot and data.get(honeypot))
+        honeypot_action = inquiry_cfg.get("honeypot_action", "drop")
+
+        if is_bot and honeypot_action == "drop":
             return JSONResponse({"ok": True})
+
         try:
-            send_inquiry_email(data, settings, vhost_dir)
+            extra_headers = {}
+            if is_bot:
+                extra_headers["Importance"] = "low"
+                extra_headers["X-Priority"] = "5"
+            send_inquiry_email(data, settings, vhost_dir, extra_headers=extra_headers)
         except Exception as e:
             logging.getLogger("error").error("inquiry email failed: %s", e)
             return JSONResponse({"error": "failed to send"}, status_code=500)

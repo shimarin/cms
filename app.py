@@ -1008,6 +1008,25 @@ async def api_inquiry(request: Request) -> Response:
         is_bot = bool(honeypot and data.get(honeypot))
         honeypot_action = inquiry_cfg.get("honeypot_action", "drop")
 
+        if not is_bot:
+            email_blacklist = inquiry_cfg.get("email_blacklist", [])
+            if email_blacklist:
+                candidates = [str(v).strip() for v in data.values() if isinstance(v, str) and "@" in v]
+                for addr in candidates:
+                    addr_lower = addr.lower()
+                    for entry in email_blacklist:
+                        entry_lower = str(entry).strip().lower()
+                        if entry_lower.startswith("@"):
+                            if addr_lower.endswith(entry_lower):
+                                is_bot = True
+                                break
+                        else:
+                            if addr_lower == entry_lower:
+                                is_bot = True
+                                break
+                    if is_bot:
+                        break
+
         if is_bot and honeypot_action == "drop":
             return JSONResponse({"ok": True})
 

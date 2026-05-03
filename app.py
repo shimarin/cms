@@ -1174,11 +1174,11 @@ async def handle_request(request: Request) -> Response:
                 return render_md_file(index_md, defaults_docs_dir, md_rel, vhost_dir, lookup_docs, request)
             break  # directory found but no index; don't fall back to next docs_dir
 
-    # Check for moved redirects before returning 404
-    for docs_dir in lookup_docs:
-        redirect_to = check_moved_redirect(docs_dir, path)
-        if redirect_to is not None:
-            return RedirectResponse(redirect_to, status_code=301)
+    # Check for moved redirects before returning 404. This follows the
+    # defaults.json scope: vhost docs only when a vhost exists, else top docs.
+    redirect_to = check_moved_redirect(defaults_docs_dir, path)
+    if redirect_to is not None:
+        return RedirectResponse(redirect_to, status_code=301)
 
     if path.endswith(".html"):
         return render_error(404, vhost_dir, request)

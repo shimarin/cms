@@ -356,6 +356,63 @@ def load_defaults(docs_dir: Path, md_rel: str) -> dict:
     return merged
 
 
+def check_moved_redirect(docs_dir: Path, path: str) -> str | None:
+    """Check defaults.json files for a 'moved' entry matching path.
+
+    Returns the resolved redirect target URL, or None if no match.
+    """
+    # Walk directories from root down to the parent of the requested path
+    parts = Path(path).parent.parts if path else ()
+    dirs = [docs_dir] + [docs_dir.joinpath(*parts[:i+1]) for i in range(len(parts))]
+
+    for d in dirs:
+        f = d / "defaults.json"
+        if not f.is_file():
+            continue
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        moved = data.get("moved")
+        if not isinstance(moved, dict):
+            continue
+
+        # Compute the relative path from this defaults.json's directory to the request
+        try:
+            rel = Path(path).relative_to(d.relative_to(docs_dir)).as_posix() if d != docs_dir else path
+        except ValueError:
+            continue
+
+        # Normalize: strip leading slash from keys
+        for from_key, to_val in moved.items():
+            from_normalized = from_key.lstrip("/")
+            # Skip entries with ../ traversal
+            if "../" in from_normalized or from_normalized.startswith(".."):
+                logging.getLogger("error").warning("moved entry with '../' skipped: %s in %s", from_key, f)
+                continue
+            if from_normalized == rel:
+                # Resolve target URL
+                if not isinstance(to_val, str):
+                    continue
+                if to_val.startswith("https://") or to_val.startswith("http://"):
+                    return to_val
+                if to_val.startswith("/"):
+                    return to_val
+                # Relative to defaults.json directory
+                dir_url = "/" + d.relative_to(docs_dir).as_posix() if d != docs_dir else ""
+                if dir_url and not dir_url.endswith("/"):
+                    dir_url += "/"
+                elif not dir_url:
+                    dir_url = "/"
+                if to_val == "":
+                    return dir_url
+                return dir_url + to_val
+
+    return None
+
+
 def _system_tz() -> datetime.tzinfo:
     return datetime.datetime.now().astimezone().tzinfo
 
@@ -1116,6 +1173,12 @@ async def handle_request(request: Request) -> Response:
                 md_rel = str(Path(path) / "index.md")
                 return render_md_file(index_md, defaults_docs_dir, md_rel, vhost_dir, lookup_docs, request)
             break  # directory found but no index; don't fall back to next docs_dir
+
+    # Check for moved redirects before returning 404
+    for docs_dir in lookup_docs:
+        redirect_to = check_moved_redirect(docs_dir, path)
+        if redirect_to is not None:
+            return RedirectResponse(redirect_to, status_code=301)
 
     if path.endswith(".html"):
         return render_error(404, vhost_dir, request)

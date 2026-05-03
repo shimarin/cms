@@ -135,6 +135,11 @@ PYGMENTS_CSS = _PYGMENTS_FORMATTER.get_style_defs(".highlight")
 def _render_fence(self, tokens, idx, options, env):
     token = tokens[idx]
     info = token.info.strip().split(None, 1)[0] if token.info else ""
+
+    if info == "mermaid":
+        env.setdefault("uses_mermaid", True)
+        return f'<pre class="mermaid">{html.escape(token.content)}</pre>\n'
+
     lang = _LANG_ALIASES.get(info, info)
     try:
         lexer = get_lexer_by_name(lang) if lang else TextLexer()
@@ -335,8 +340,12 @@ def parse_markdown_document(
             tz = _system_tz()
         front_matter["date"] = datetime.datetime.fromtimestamp(source_mtime, tz=tz)
 
-    body_html = instance.renderer.render(tokens, instance.options, {})
-    return body_html, {**defaults, **front_matter}
+    render_env: dict = {}
+    body_html = instance.renderer.render(tokens, instance.options, render_env)
+    metadata = {**defaults, **front_matter}
+    if render_env.get("uses_mermaid"):
+        metadata["uses_mermaid"] = True
+    return body_html, metadata
 
 
 def load_defaults(docs_dir: Path, md_rel: str) -> dict:

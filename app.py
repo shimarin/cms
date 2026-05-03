@@ -390,7 +390,7 @@ def check_moved_redirect(docs_dir: Path, path: str) -> str | None:
             from_normalized = from_key.lstrip("/")
             # Skip entries with ../ traversal
             if "../" in from_normalized or from_normalized.startswith(".."):
-                logging.getLogger("error").warning("moved entry with '../' skipped: %s in %s", from_key, f)
+                get_error_logger().warning("moved entry with '../' skipped: %s in %s", from_key, f)
                 continue
             if from_normalized == rel:
                 # Resolve target URL
@@ -927,6 +927,21 @@ class _SizeThresholdTimedRotatingFileHandler(logging.handlers.TimedRotatingFileH
         return True
 
 
+def get_error_logger() -> logging.Logger:
+    logger = logging.getLogger("error")
+    if FILE_LOGGING_ENABLED and not logger.handlers:
+        TOP_LOGS_DIR.mkdir(exist_ok=True)
+        handler = _SizeThresholdTimedRotatingFileHandler(
+            TOP_LOGS_DIR / "error_log",
+            when="midnight", backupCount=30, encoding="utf-8",
+            min_bytes=0,
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.WARNING)
+    return logger
+
+
 def get_access_logger(vhost_dir: Path | None) -> logging.Logger:
     key = vhost_dir.name if vhost_dir else "_top"
     logger = logging.getLogger(f"access.{key}")
@@ -1096,7 +1111,7 @@ async def api_inquiry(request: Request) -> Response:
                 subject_prefix = inquiry_cfg.get("honeypot_subject_prefix", "[Bot]")
             send_inquiry_email(data, settings, vhost_dir, extra_headers=extra_headers, subject_prefix=subject_prefix)
         except Exception as e:
-            logging.getLogger("error").error("inquiry email failed: %s", e)
+            get_error_logger().error("inquiry email failed: %s", e)
             return JSONResponse({"error": "failed to send"}, status_code=500)
         return JSONResponse({"ok": True})
 

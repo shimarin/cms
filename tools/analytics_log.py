@@ -66,6 +66,15 @@ def build_query(args) -> tuple[str, list]:
     if args.sec_fetch_user:
         conditions.append("sec_fetch_user = ?")
         params.append(args.sec_fetch_user)
+    if args.lang:
+        # Match language prefix: "ja" matches "ja", "ja-JP", "ja,en", etc.
+        conditions.append(
+            "(accept_language LIKE ? OR accept_language LIKE ? OR accept_language LIKE ?)"
+        )
+        lang = args.lang
+        params.append(f"{lang}%")        # starts with lang
+        params.append(f"%, {lang}%")     # after comma+space
+        params.append(f"%,{lang}%")      # after comma (no space)
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = f" LIMIT {args.limit}" if args.limit else ""
     return f"SELECT * FROM access{where} ORDER BY id ASC{limit}", params
@@ -109,6 +118,14 @@ def follow(conn: sqlite3.Connection, args) -> None:
         if args.sec_fetch_user:
             conditions.append("sec_fetch_user = ?")
             params.append(args.sec_fetch_user)
+        if args.lang:
+            conditions.append(
+                "(accept_language LIKE ? OR accept_language LIKE ? OR accept_language LIKE ?)"
+            )
+            lang = args.lang
+            params.append(f"{lang}%")
+            params.append(f"%, {lang}%")
+            params.append(f"%,{lang}%")
         where = " WHERE " + " AND ".join(conditions)
         return f"SELECT * FROM access{where} ORDER BY id ASC", params
 
@@ -151,6 +168,7 @@ def main() -> None:
     parser.add_argument("--sec-fetch-mode", metavar="VAL", help="Filter by Sec-Fetch-Mode (navigate, cors, same-origin, no-cors)")
     parser.add_argument("--sec-fetch-dest", metavar="VAL", help="Filter by Sec-Fetch-Dest (document, empty, image, script, ...)")
     parser.add_argument("--sec-fetch-user", metavar="VAL", help="Filter by Sec-Fetch-User (?1)")
+    parser.add_argument("--lang", metavar="CODE", help="Filter by Accept-Language prefix (e.g. 'ja' matches ja, ja-JP)")
     parser.add_argument("--limit", type=int, metavar="N", help="Limit number of records")
     args = parser.parse_args()
 

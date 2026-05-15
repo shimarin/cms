@@ -1024,6 +1024,7 @@ def _get_analytics_db(vhost_dir: Path | None) -> sqlite3.Connection:
                 db_path = _get_logs_dir(vhost_dir) / "access_log.sqlite"
                 conn = sqlite3.connect(str(db_path), check_same_thread=False)
                 conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout = 5000")
                 conn.executescript(_ANALYTICS_SCHEMA)
                 _analytics_connections[key] = conn
     return _analytics_connections[key]
@@ -1045,34 +1046,37 @@ def record_analytics(
     if not _is_organic_request(request):
         return
 
-    conn = _get_analytics_db(vhost_dir)
-    ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    conn.execute(
-        "INSERT INTO access "
-        "(ts, remote_ip, method, path, query, status, size, elapsed_ms, "
-        "referer, user_agent, accept_language, content_type, "
-        "sec_fetch_site, sec_fetch_mode, sec_fetch_dest, sec_fetch_user) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            ts,
-            get_client_ip(request),
-            request.method,
-            request.url.path,
-            request.url.query or None,
-            status,
-            size,
-            round(elapsed_ms, 2),
-            request.headers.get("referer"),
-            request.headers.get("user-agent"),
-            request.headers.get("accept-language"),
-            content_type,
-            request.headers.get("sec-fetch-site"),
-            request.headers.get("sec-fetch-mode"),
-            request.headers.get("sec-fetch-dest"),
-            request.headers.get("sec-fetch-user"),
-        ),
-    )
-    conn.commit()
+    try:
+        conn = _get_analytics_db(vhost_dir)
+        ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        conn.execute(
+            "INSERT INTO access "
+            "(ts, remote_ip, method, path, query, status, size, elapsed_ms, "
+            "referer, user_agent, accept_language, content_type, "
+            "sec_fetch_site, sec_fetch_mode, sec_fetch_dest, sec_fetch_user) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                ts,
+                get_client_ip(request),
+                request.method,
+                request.url.path,
+                request.url.query or None,
+                status,
+                size,
+                round(elapsed_ms, 2),
+                request.headers.get("referer"),
+                request.headers.get("user-agent"),
+                request.headers.get("accept-language"),
+                content_type,
+                request.headers.get("sec-fetch-site"),
+                request.headers.get("sec-fetch-mode"),
+                request.headers.get("sec-fetch-dest"),
+                request.headers.get("sec-fetch-user"),
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        get_error_logger().error("analytics log write failed: %s", e)
 
 
 # ---------------------------------------------------------------------------

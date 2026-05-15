@@ -9,6 +9,8 @@ import html
 import secrets
 import smtplib
 import mimetypes
+import sqlite3
+import threading
 from io import BytesIO
 from email.utils import formatdate, parsedate_to_datetime
 from email.mime.text import MIMEText
@@ -983,6 +985,97 @@ def apache_combined_log(request: Request, status: int, size: int, vhost_dir: Pat
 
 
 # ---------------------------------------------------------------------------
+# SQLite analytics log (organic access only)
+# ---------------------------------------------------------------------------
+
+_ANALYTICS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS access (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL,
+    remote_ip TEXT,
+    method TEXT,
+    path TEXT,
+    query TEXT,
+    status INTEGER,
+    size INTEGER,
+    elapsed_ms REAL,
+    referer TEXT,
+    user_agent TEXT,
+    accept_language TEXT,
+    content_type TEXT,
+    sec_fetch_site TEXT,
+    sec_fetch_mode TEXT,
+    sec_fetch_dest TEXT,
+    sec_fetch_user TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_access_ts ON access(ts);
+CREATE INDEX IF NOT EXISTS idx_access_path ON access(path);
+"""
+
+_analytics_connections: dict[str, sqlite3.Connection] = {}
+_analytics_lock = threading.Lock()
+
+
+def _get_analytics_db(vhost_dir: Path | None) -> sqlite3.Connection:
+    key = str(vhost_dir) if vhost_dir else "_top"
+    if key not in _analytics_connections:
+        with _analytics_lock:
+            if key not in _analytics_connections:
+                db_path = _get_logs_dir(vhost_dir) / "access_log.sqlite"
+                conn = sqlite3.connect(str(db_path), check_same_thread=False)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.executescript(_ANALYTICS_SCHEMA)
+                _analytics_connections[key] = conn
+    return _analytics_connections[key]
+
+
+def _is_organic_request(request: Request) -> bool:
+    """Return True if any Sec-Fetch-* header is present."""
+    return any(
+        k.startswith("sec-fetch-") for k in request.headers.keys()
+    )
+
+
+def record_analytics(
+    request: Request, status: int, size: int, elapsed_ms: float,
+    content_type: str | None, vhost_dir: Path | None
+) -> None:
+    if not FILE_LOGGING_ENABLED:
+        return
+    if not _is_organic_request(request):
+        return
+
+    conn = _get_analytics_db(vhost_dir)
+    ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO access "
+        "(ts, remote_ip, method, path, query, status, size, elapsed_ms, "
+        "referer, user_agent, accept_language, content_type, "
+        "sec_fetch_site, sec_fetch_mode, sec_fetch_dest, sec_fetch_user) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            ts,
+            get_client_ip(request),
+            request.method,
+            request.url.path,
+            request.url.query or None,
+            status,
+            size,
+            round(elapsed_ms, 2),
+            request.headers.get("referer"),
+            request.headers.get("user-agent"),
+            request.headers.get("accept-language"),
+            content_type,
+            request.headers.get("sec-fetch-site"),
+            request.headers.get("sec-fetch-mode"),
+            request.headers.get("sec-fetch-dest"),
+            request.headers.get("sec-fetch-user"),
+        ),
+    )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
 
@@ -1218,6 +1311,10 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         size = int(response.headers.get("content-length", 0))
         apache_combined_log(request, response.status_code, size, vhost_dir)
+
+        elapsed_ms = (time.monotonic() - start) * 1000
+        content_type = response.headers.get("content-type")
+        record_analytics(request, response.status_code, size, elapsed_ms, content_type, vhost_dir)
         return response
 
 

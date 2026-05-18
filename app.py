@@ -482,7 +482,7 @@ def generate_feed(url_dir: str, defaults_docs_dir: Path, lookup_docs: list[Path]
     if not any((docs_dir / rel if rel else docs_dir).is_dir() for docs_dir in lookup_docs):
         return Response("Not Found", status_code=404, media_type="text/plain")  # feed: no template
     articles = make_index_of(lookup_docs, defaults_docs_dir)(url_dir or "/")
-    base_url = str(request.base_url).rstrip("/")
+    base_url = get_site_url(request)
 
     dir_defaults = load_defaults(defaults_docs_dir, (url_dir.strip("/") + "/index.md") if url_dir.strip("/") else "index.md")
     channel_title = dir_defaults.get("title") or dir_defaults.get("site_name") or base_url
@@ -522,7 +522,7 @@ def generate_feed(url_dir: str, defaults_docs_dir: Path, lookup_docs: list[Path]
 
 
 def generate_sitemap(defaults_docs_dir: Path, lookup_docs: list[Path], request: Request) -> Response:
-    base_url = str(request.base_url).rstrip("/")
+    base_url = get_site_url(request)
     seen: set[str] = set()
     urls = []
 
